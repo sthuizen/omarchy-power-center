@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+      - name: Validate manifest basics
+        run: |
+          node -e 'const m=require("./manifest.json"); if(m.schemaVersion!==1 || !m.id || !m.entryPoints?.barWidget) process.exit(1)'
+          test -f "$(node -p 'require("./manifest.json").entryPoints.barWidget')"
