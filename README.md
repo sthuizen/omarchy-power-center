@@ -24,7 +24,7 @@ battery icon and all battery information.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/thenailedone/omarchy-power-center.git --enable
+omarchy plugin add https://github.com/sthuizen/omarchy-power-center.git --enable
 ```
 
 The manifest declares `clonedFrom: omarchy.power`, allowing Omarchy to replace

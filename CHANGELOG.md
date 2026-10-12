@@ -22,5 +22,5 @@ All notable changes are documented here. This project follows
 - Power-profile selection and active-state display.
 - System statistics, rotating charge/discharge status, and percentage toggle.
 
-[Unreleased]: https://github.com/thenailedone/omarchy-power-center/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/thenailedone/omarchy-power-center/releases/tag/v1.0.0
+[Unreleased]: https://github.com/sthuizen/omarchy-power-center/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/sthuizen/omarchy-power-center/releases/tag/v1.0.0

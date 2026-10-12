@@ -3,7 +3,7 @@
   "id": "io.github.thenailedone.power-center",
   "name": "Power Center",
   "version": "1.0.0",
-  "author": "thenailedone",
+  "author": "sthuizen",
   "license": "MIT",
   "description": "Omarchy's battery and profile panel expanded with every System menu power action.",
   "kinds": [
