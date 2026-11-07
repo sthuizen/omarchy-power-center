@@ -15,8 +15,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: npm test
-      - name: Validate manifest basics
+      - name: Validate plugin metadata
         run: |
-          node -e 'const m=require("./manifest.json"); if(m.schemaVersion!==1 || !m.id || !m.entryPoints?.barWidget) process.exit(1)'
-          test -f "$(node -p 'require("./manifest.json").entryPoints.barWidget')"
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('manifest.json').read_text())
+          package = json.loads(Path('package.json').read_text())
+          assert manifest['schemaVersion'] == 1
+          assert manifest['version'] == package['version']
+          assert manifest['id'] and not manifest['id'].startswith('omarchy.')
+          for entry in manifest['entryPoints'].values():
+              assert not Path(entry).is_absolute() and '..' not in Path(entry).parts
+              assert Path(entry).is_file()
+          json.loads(Path('i18n/en.json').read_text())
+          PYCODE
+      - name: Check commit whitespace
+        run: git show --format= --check HEAD

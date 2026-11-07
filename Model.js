@@ -124,3 +124,31 @@ if (typeof module !== "undefined") {
     modeLabel: modeLabel
   }
 }
+
+// Escape only when handing text to an Omarchy-owned component. Our own
+// Text elements always use PlainText. Never interpret output as markup.
+function safeText(value) {
+  return String(value === undefined || value === null ? "" : value).slice(0, 512)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+function validProfiles(raw) {
+  var parsed = parseProfiles(String(raw || "").slice(0, 4096), 0)
+  var allowed = ["power-saver", "balanced", "performance"]
+  var values = parsed.profiles.filter(function(p, i, a) { return allowed.indexOf(p) >= 0 && a.indexOf(p) === i })
+  return { profiles: values, activeProfile: values.indexOf(parsed.activeProfile) >= 0 ? parsed.activeProfile : "" }
+}
+
+function finiteFraction(value) {
+  var n = Number(value)
+  return isFinite(n) ? Math.max(0, Math.min(1, n)) : 0
+}
+
+function durationMinutes(seconds) {
+  var value = Number(seconds)
+  return isFinite(value) && value > 0 ? Math.ceil(value / 60) : 0
+}
+
+if (typeof module !== "undefined") Object.assign(module.exports, {
+  safeText: safeText, validProfiles: validProfiles, finiteFraction: finiteFraction, durationMinutes: durationMinutes
+})

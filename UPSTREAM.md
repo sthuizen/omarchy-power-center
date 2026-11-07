@@ -15,7 +15,7 @@ distributed under the MIT License.
 
 The original copyright and permission notice are retained in `LICENSE`.
 
-## Local changes
+## Changes from the original widget
 
 - Renamed the plugin and moved it into the author's GitHub namespace.
 - Added the complete action set from Omarchy's default System menu.
@@ -25,6 +25,16 @@ The original copyright and permission notice are retained in `LICENSE`.
 - Added confirmation before session-ending or power-ending actions.
 - Kept the widget available on systems without a battery.
 - Added tests and repository documentation.
+- Rebuilt the 2.0 panel using current Omarchy KeyboardPanel, ShellIpc, Button,
+  and translation APIs; the baseline above records the historical 1.0 fork.
+- Replaced battery subprocess polling and phrase animation with reactive UPower
+  readings; added bounded kernel telemetry and parallel capability checks.
+- Added Stay awake, battery health and cycles, profile feedback, complete keyboard
+  navigation, plain-text sinks, and reduced-motion support.
+
+The 2.0 implementation is a substantial rewrite, not a verbatim copy of the
+baseline files. The historical hashes are retained for provenance; they are
+not hashes of the current plugin.
 
 ## Update policy
 
@@ -36,6 +46,7 @@ Upstream changes are not merged automatically. To update the fork:
    controls or confirmation flow.
 3. Update the version and changelog.
 4. Run `npm test`, `omarchy plugin validate .`, and `git diff --check`.
+   Verify the popup in a live shell and check its logs for plugin errors.
 5. Record the new upstream version and hashes in this file.
 
 This project is independent and unofficial. It is not endorsed by or

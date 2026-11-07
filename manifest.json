@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.thenailedone.power-center",
   "name": "Power Center",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "sthuizen",
   "license": "MIT",
-  "description": "Omarchy's battery and profile panel expanded with every System menu power action.",
+  "description": "Live energy dashboard, remembered power profiles, idle control, and complete session actions.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Power Center",
-    "description": "Battery, profiles, system stats, screensaver, lock, suspend, hibernate, logout, reboot, and shutdown.",
+    "description": "Live energy dashboard, remembered power profiles, idle control, and complete session actions.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

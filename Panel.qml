@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -10,351 +11,173 @@ Panel {
   id: root
   moduleName: "io.github.thenailedone.power-center"
   ipcTarget: "omarchy.power"
-  // manageIpc: false so this panel can own the single IpcHandler the target
-  // permits — needed for the togglePercentage method below.
   manageIpc: false
-  property var batteryInfo: ({})
-  property var systemInfo: ({})
-  property var profiles: []
-  property string activeProfile: ""
-  property int profileIndex: 0
-  property bool cursorActive: false
-  property bool suspendAvailable: true
-  property bool hibernateAvailable: false
-  property bool confirmOpen: false
-  property var pendingSystemAction: null
-  property var pendingExecutionAction: null
-  readonly property var systemActions: Model.systemActions(suspendAvailable, hibernateAvailable)
+
+  Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+  readonly property var device: UPower.displayDevice
+  readonly property bool batteryPresent: !!(device && device.isPresent)
+  readonly property real fraction: batteryPresent ? Model.finiteFraction(device.percentage) : 0
+  readonly property bool onBattery: batteryPresent && UPower.onBattery
+  readonly property bool holding: batteryPresent && Model.chargeThresholdActive(device, onBattery, states)
+  readonly property bool charging: batteryPresent && device.state === UPowerDeviceState.Charging && !holding
+  readonly property var states: ({ Charging: UPowerDeviceState.Charging, Discharging: UPowerDeviceState.Discharging, FullyCharged: UPowerDeviceState.FullyCharged, PendingCharge: UPowerDeviceState.PendingCharge })
+  readonly property string glyph: batteryPresent ? Model.batteryIcon(device, onBattery, states) : "󰐥"
   readonly property bool showPercentage: setting("showPercentage", false) === true
-  // With the percentage shown the button paints a text block wider than an
-  // icon, so the open-panel mark takes the painted width instead of the
-  // icon-sized fraction of the slot the fallback assumes.
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
-  readonly property bool batteryPresent: {
-    var device = UPower.displayDevice
-    return !!(device && device.isPresent)
-  }
+  readonly property color ink: root.bar ? root.bar.foreground : Commons.Color.foreground
+  readonly property color accent: onBattery && fraction <= 0.15 ? Commons.Color.urgent : Commons.Color.accent
+  property var snapshot: ({ batteries: [], awake: null, suspend: false, hibernate: false })
+  property var profiles: []
+  // The daemon's D-Bus signal updates selection immediately, including changes
+  // made by another client. Writes still use Omarchy to preserve AC/DC choices.
+  readonly property string activeProfile: PowerProfiles.profile === PowerProfile.PowerSaver ? "power-saver" : PowerProfiles.profile === PowerProfile.Performance ? "performance" : "balanced"
+  property bool loaded: false
+  property string noticeKey: ""
+  property bool failed: false
+  property int cursor: -1
+  property string pendingAction: ""
+  property string pendingExecution: ""
+  property string actionId: ""
+  property bool refreshPending: false
+  readonly property bool busy: actionProc.running || pendingExecution !== ""
+  readonly property var actions: Model.systemActions(snapshot.suspend === true, snapshot.hibernate === true)
+  readonly property int idleCount: snapshot.awake === null ? 0 : 1
+  readonly property int actionStart: profiles.length + idleCount
+  readonly property int controlCount: actionStart + actions.length + 1
+  readonly property var hardware: snapshot.batteries.length === 1 ? snapshot.batteries[0] : ({})
+  readonly property string statusKey: !batteryPresent ? "desktop" : holding ? "holding" : onBattery ? "discharging" : charging ? "charging" : device.state === UPowerDeviceState.FullyCharged ? "full" : "plugged"
 
-  function upowerStates() {
-    return {
-      Charging: UPowerDeviceState.Charging,
-      Discharging: UPowerDeviceState.Discharging,
-      FullyCharged: UPowerDeviceState.FullyCharged,
-      PendingCharge: UPowerDeviceState.PendingCharge
-    }
+  function n(value, decimals) { return Commons.I18n.formatNumber(value, decimals || 0) }
+  function metric(value, suffix, decimals) { return typeof value === "number" && isFinite(value) && value >= 0 ? n(value, decimals) + suffix : "—" }
+  function timeLabel() {
+    if (!batteryPresent || holding || (!charging && !onBattery)) return "—"
+    var minutes = Model.durationMinutes(charging ? device.timeToFull : device.timeToEmpty)
+    if (!minutes) return strings.t("noEstimate")
+    return minutes < 60 ? strings.tn("minutes", minutes).arg(n(minutes)) : strings.t("hoursMinutes").arg(n(Math.floor(minutes / 60))).arg(n(minutes % 60))
   }
-
-  function selectProfileByDelta(delta) {
-    profileIndex = Model.selectProfileIndex(profileIndex, delta, profiles)
+  function controlKeys() {
+    var result = profiles.map(function(p) { return "profile:" + p })
+    if (idleCount) result.push("idle")
+    for (var i = 0; i < actions.length; i++) result.push("action:" + actions[i].id)
+    result.push("refresh")
+    return result
   }
-
-  function activateSelectedProfile() {
-    if (profileIndex < 0 || profileIndex >= profiles.length) return
-    setProfile(profiles[profileIndex])
-  }
-
-  function batteryIcon() {
-    var device = UPower.displayDevice
-    return Model.batteryIcon(device, root.discharging, upowerStates())
-  }
-
-  function modeLabel() {
-    var device = UPower.displayDevice
-    return Model.modeLabel(device, root.discharging, upowerStates())
-  }
-
-  function profileIcon(name) {
-    return Model.profileIcon(name)
-  }
-
-  readonly property bool fullyCharged: {
-    var device = UPower.displayDevice
-    return device && device.isPresent && device.state === UPowerDeviceState.FullyCharged && !root.chargeThresholdActive
-  }
-  readonly property bool discharging: {
-    var device = UPower.displayDevice
-    return !!(device && device.isPresent && UPower.onBattery)
-  }
-  readonly property bool chargeThresholdActive: {
-    var device = UPower.displayDevice
-    return Model.chargeThresholdActive(device, root.discharging, upowerStates())
-  }
-  readonly property bool batteryFull: fullyCharged || (!root.discharging && batteryFraction >= 1)
-  readonly property bool batteryFlowIdle: batteryFull || chargeThresholdActive
-
-  // 0..1 charge level, used by the visual progress bar.
-  readonly property real batteryFraction: {
-    var d = UPower.displayDevice
-    return Model.batteryFraction(d)
-  }
-
-  readonly property bool charging: {
-    var d = UPower.displayDevice
-    return d && d.isPresent && !UPower.onBattery && !root.batteryFlowIdle
-  }
-
-  readonly property color batteryFillColor: {
-    return root.bar ? root.bar.foreground : Color.foreground
-  }
-
-  // Cute agent-flavored phrases shown in the hero status line, rotated on a
-  // timer so the panel feels alive when current is flowing (either direction).
-  readonly property var chargingPhrases: [
-    "Pumping power",
-    "Injecting electrons",
-    "Pouring juice",
-    "Amassing watts",
-    "Hoarding joules",
-    "Sucking volts",
-    "Topping reserves",
-    "Soaking amps",
-    "Inhaling kilowatts"
-  ]
-  readonly property var onBatteryPhrases: [
-    "Slurping power",
-    "Spending joules",
-    "Draining watts",
-    "Burning electrons",
-    "Sipping juice",
-    "Spending coulombs",
-    "Bleeding amps",
-    "Guzzling volts",
-    "Munching reserves"
-  ]
-  property int phraseIndex: 0
-
-  // Whichever list is "active" given the current power state.
-  readonly property var activePhrases: {
-    if (fullyCharged) return []
-    if (charging) return chargingPhrases
-    if (discharging) return onBatteryPhrases
-    return []
-  }
-  readonly property bool rotatingPhrases: activePhrases.length > 0
-
-  readonly property string heroStatusText: {
-    if (fullyCharged) return "Fully charged"
-    if (rotatingPhrases) return activePhrases[phraseIndex % activePhrases.length]
-    return modeLabel()
-  }
-
   function refresh() {
-    if (batteryPresent && !batteryProc.running) batteryProc.running = true
-    if (!profilesProc.running) profilesProc.running = true
-    if (!systemProc.running) systemProc.running = true
+    if (probe.running) { refreshPending = true; return }
+    refreshPending = false
+    probe.running = true
   }
-
-  function refreshActionAvailability() {
-    if (!suspendCheckProc.running) suspendCheckProc.running = true
-    if (!hibernateCheckProc.running) hibernateCheckProc.running = true
+  function applySnapshot(raw) {
+    try {
+      if (raw.length > 32768) throw new Error("oversized response")
+      var next = JSON.parse(raw)
+      if (!Array.isArray(next.batteries) || next.batteries.length > 32 || typeof next.profiles !== "string" || typeof next.suspend !== "boolean" || typeof next.hibernate !== "boolean" || (next.awake !== null && typeof next.awake !== "boolean")) throw new Error("invalid response")
+      var parsed = Model.validProfiles(next.profiles)
+      var previousKey = controlKeys()[cursor]
+      snapshot = next
+      profiles = parsed.profiles
+      loaded = true
+      cursor = previousKey ? controlKeys().indexOf(previousKey) : -1
+    } catch (e) { noticeKey = "probeFailed"; failed = true }
   }
-
-  function executeSystemAction(action) {
-    if (!action || systemActionProc.running || pendingExecutionAction) return
-    root.confirmOpen = false
-    root.pendingSystemAction = null
-    root.pendingExecutionAction = action
-    root.close()
-    // Let the layer-shell popup release keyboard focus before launching an
-    // action, especially the screensaver and session-ending commands.
-    systemActionDelay.restart()
+  function moveCursor(delta) { cursor = (cursor + delta + controlCount) % controlCount }
+  function activateCursor() {
+    if (cursor < 0 || !loaded) return
+    if (cursor < profiles.length) setProfile(profiles[cursor])
+    else if (idleCount && cursor === profiles.length) setIdle()
+    else if (cursor < controlCount - 1) requestAction(actions[cursor - actionStart].id)
+    else refresh()
   }
-
-  function requestSystemAction(action) {
-    if (!action) return
-    if (!action.destructive) {
-      executeSystemAction(action)
-      return
-    }
-    root.pendingSystemAction = action
-    destructiveConfirm.selectedIndex = 0
-    root.confirmOpen = true
-    Qt.callLater(function() { destructiveConfirm.forceActiveFocus() })
-  }
-
-  function cancelSystemAction() {
-    root.confirmOpen = false
-    root.pendingSystemAction = null
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-  }
-
-  function confirmSystemAction() {
-    var action = root.pendingSystemAction
-    if (action) executeSystemAction(action)
-  }
-
-  function updateKeyValue(raw, targetName) {
-    var next = Model.parseKeyValue(raw)
-    // Keep last known good data if a refresh briefly returns nothing — happens
-    // around AC plug/unplug events. Avoids the section collapsing mid-transition.
-    if (Object.keys(next).length === 0) return
-    if (targetName === "battery") batteryInfo = next
-    else systemInfo = next
-  }
-
-  function updateProfiles(raw) {
-    var parsed = Model.parseProfiles(raw, profileIndex)
-    // Same guard as battery: preserve the last known profile list across
-    // transient empty payloads so the buttons don't blink out.
-    if (parsed.profiles.length === 0) return
-    profiles = parsed.profiles
-    activeProfile = parsed.activeProfile
-    profileIndex = parsed.profileIndex
-    if (opened && !cursorActive) {
-      var idx = profiles.indexOf(activeProfile)
-      if (idx >= 0) profileIndex = idx
-    }
-  }
-
   function setProfile(profile) {
-    if (!profile || actionProc.running) return
-    actionProc.command = ["omarchy-powerprofiles-set", root.discharging ? "battery" : "ac", profile]
+    if (busy || profiles.indexOf(profile) < 0) return
+    actionId = "profile"
+    actionProc.command = ["timeout", "--kill-after=1s", "8s", "omarchy", "powerprofiles", "set", "autodetect", profile]
     actionProc.running = true
   }
-
+  function setIdle() {
+    if (busy || snapshot.awake === null) return
+    actionId = "idle"
+    actionProc.command = ["timeout", "--kill-after=1s", "8s", "omarchy", "toggle", "idle", snapshot.awake ? "allow-idle" : "stay-awake"]
+    actionProc.running = true
+  }
+  function requestAction(id) {
+    if (busy) return
+    for (var i = 0; i < actions.length; i++) {
+      if (actions[i].id !== id) continue
+      if (actions[i].destructive) {
+        pendingAction = id
+        if (panel.loadedContent) panel.loadedContent.prepareConfirmation()
+      } else executeAction(id)
+      return
+    }
+  }
+  function executeAction(id) {
+    if (busy) return
+    // Resolve the id against the fixed action table; no command text from snapshot.
+    for (var i = 0; i < actions.length; i++) {
+      if (actions[i].id !== id) continue
+      actionProc.command = actions[i].command
+      actionId = id
+      pendingExecution = id
+      pendingAction = ""
+      root.close()
+      launchDelay.start()
+      return
+    }
+  }
   function togglePercentage() {
-    root.settings = Object.assign({}, root.settings, { showPercentage: !root.showPercentage })
+    root.settings = Object.assign({}, root.settings, { showPercentage: !showPercentage })
     if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
   }
 
-  IpcHandler {
+  ShellIpc {
     target: "omarchy.power"
-
-    function open() { root.open() }
-    function close() { root.close() }
-    function show() { root.open() }
-    function hide() { root.close() }
-    function toggle() { root.toggle() }
-    function togglePercentage() { root.togglePercentage() }
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    function togglePercentage(): void { root.togglePercentage() }
   }
-
+  onCursorChanged: if (panel.loadedContent) Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.revealCursor() })
   onOpenedChanged: {
-    if (opened) {
-      refresh()
-      refreshActionAvailability()
-      var idx = profiles.indexOf(activeProfile)
-      profileIndex = idx >= 0 ? idx : 0
-      cursorActive = false
-    } else {
-      confirmOpen = false
-      pendingSystemAction = null
+    pendingAction = ""
+    cursor = -1
+    if (opened) refresh()
+  }
+  Process {
+    id: probe
+    command: ["python3", String(Qt.resolvedUrl("backend.py")).replace(/^file:\/\//, "")]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applySnapshot(text) }
+    onExited: function(code) {
+      if (code !== 0) { root.noticeKey = "probeFailed"; root.failed = true }
+      if (root.refreshPending && root.opened) Qt.callLater(root.refresh)
     }
   }
-
-  visible: true
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
-
-  Process {
-    id: batteryProc
-    command: ["omarchy-battery-status", "--shell"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateKeyValue(text, "battery") }
-  }
-
-  Process {
-    id: profilesProc
-    command: ["omarchy-powerprofiles-list", "--active-state"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateProfiles(text) }
-  }
-
-  Process {
-    id: systemProc
-    command: ["omarchy-system-stats"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateKeyValue(text, "system") }
-  }
-
   Process {
     id: actionProc
-    onExited: root.refresh()
-  }
-
-  Process {
-    id: systemActionProc
-  }
-
-  Timer {
-    id: systemActionDelay
-    interval: 120
-    repeat: false
-    onTriggered: {
-      var action = root.pendingExecutionAction
-      root.pendingExecutionAction = null
-      if (!action) return
-      systemActionProc.command = action.command
-      systemActionProc.running = true
+    onExited: function(code) {
+      root.failed = code !== 0
+      root.noticeKey = code !== 0 ? "actionFailed" : root.actionId === "profile" ? "profileChanged" : root.actionId === "idle" ? "idleChanged" : ""
+      if (code !== 0 && !root.opened) root.open()
+      else if (root.opened) root.refresh()
     }
   }
+  // Fixed focus-release delay, not an animation: actions can open another UI.
+  Timer { id: launchDelay; interval: 150; onTriggered: { root.pendingExecution = ""; actionProc.running = true } }
+  Timer { interval: 15000; running: root.opened; repeat: true; onTriggered: root.refresh() }
 
-  Process {
-    id: suspendCheckProc
-    command: ["bash", "-lc", "! omarchy-toggle-enabled suspend-off"]
-    onExited: function(exitCode) { root.suspendAvailable = exitCode === 0 }
-  }
-
-  Process {
-    id: hibernateCheckProc
-    command: ["omarchy-hibernation-available"]
-    onExited: function(exitCode) { root.hibernateAvailable = exitCode === 0 }
-  }
-
-  Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
-
-  // Rotate the status phrase while the panel is open and we're in a
-  // rotating state (charging or on battery). The text swap is wrapped in a
-  // fade so the changeover reads as one organism rather than a hard cut.
-  Timer {
-    id: phraseTimer
-    interval: 2800
-    running: root.opened && root.rotatingPhrases
-    repeat: true
-    triggeredOnStart: false
-    onTriggered: phraseSwap.restart()
-  }
-
-  SequentialAnimation {
-    id: phraseSwap
-    PropertyAnimation {
-      target: heroStatus; property: "opacity"
-      to: 0.0; duration: 180; easing.type: Easing.OutQuad
-    }
-    ScriptAction {
-      script: {
-        var n = root.activePhrases.length
-        if (n > 0) root.phraseIndex = (root.phraseIndex + 1) % n
-      }
-    }
-    PropertyAnimation {
-      target: heroStatus; property: "opacity"
-      to: 1.0; duration: 260; easing.type: Easing.InQuad
-    }
-  }
-
-  // If we leave a rotating state mid-swap, halt the animation and snap back
-  // to full opacity so "FULLY CHARGED" is legible immediately rather than
-  // appearing dimmed.
-  Connections {
-    target: root
-    function onRotatingPhrasesChanged() {
-      if (!root.rotatingPhrases) {
-        phraseSwap.stop()
-        heroStatus.opacity = 1.0
-      }
-    }
-  }
-
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.showPercentage && !vertical
-      ? Math.round(root.batteryFraction * 100) + "% " + root.batteryIcon()
-      : (root.batteryPresent ? root.batteryIcon() : "")
+    text: root.glyph
+    labelText: root.batteryPresent && root.showPercentage && !vertical ? root.n(Math.round(root.fraction * 100)) + "%" : ""
     slotSize: Style.bar.iconSlot * (root.batteryPresent && root.showPercentage && !vertical ? 2 : 1)
-    tooltipText: "Power Center"
-    onPressed: function(b) {
-      if (b === Qt.RightButton && root.batteryPresent) root.togglePercentage()
-      else root.toggle()
-    }
+    tooltipText: ""
+    onPressed: function(b) { if (b === Qt.RightButton && root.batteryPresent) root.togglePercentage(); else root.toggle() }
   }
 
   KeyboardPanel {
@@ -363,306 +186,262 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    focusTarget: panel.loadedContent
+    contentWidth: panel.fittedContentWidth(Style.space(430))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
 
-    PanelKeyCatcher {
-      id: keyCatcher
+    content: PanelKeyCatcher {
+      id: keys
       anchors.fill: parent
-      blocked: root.confirmOpen
-      onMoveRequested: function(dx, dy) {
-        if (!root.cursorActive) { root.cursorActive = true; return }
-        if (dx !== 0) root.selectProfileByDelta(dx)
-        else if (dy !== 0) root.selectProfileByDelta(dy)
+      implicitHeight: column.implicitHeight
+      blocked: root.pendingAction !== ""
+      function revealCursor() {
+        var item = root.cursor < root.profiles.length ? profileRepeater.itemAt(root.cursor) : root.idleCount && root.cursor === root.profiles.length ? idleButton : root.cursor < root.controlCount - 1 ? actionRepeater.itemAt(root.cursor - root.actionStart) : refreshButton
+        if (!item) return
+        var y = item.mapToItem(column, 0, 0).y
+        if (y < scroll.contentY) scroll.contentY = y
+        else if (y + item.height > scroll.contentY + scroll.height) scroll.contentY = Math.max(0, y + item.height - scroll.height)
       }
-      onActivateRequested: if (root.cursorActive) root.activateSelectedProfile()
+      function prepareConfirmation() {
+        confirm.selectedIndex = 0
+        Qt.callLater(function() { confirm.forceActiveFocus() })
+      }
+      onMoveRequested: function(dx, dy) { root.moveCursor(dx || dy) }
+      onActivateRequested: root.activateCursor()
       onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onTabRequested: function(direction) { root.moveCursor(direction) }
+      onTextKey: function(text, modifiers) { if (text === "r") root.refresh() }
 
-      Column {
-        id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(14)
-
-        // ---------- Hero: battery icon · title/status · percentage ----------
-        Item {
-          visible: root.batteryPresent
-          width: parent.width
-          implicitHeight: visible ? Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroPercent.implicitHeight) : 0
-
-          Text {
-            id: heroIcon
-            text: root.batteryIcon()
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.display
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-
-            Behavior on color { ColorAnimation { duration: 200 } }
-          }
-
-          Column {
-            id: heroLabels
-            anchors.left: heroIcon.right
-            anchors.leftMargin: Style.space(14)
-            anchors.right: heroPercent.left
-            anchors.rightMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(2)
-
-            Text {
-              text: "Battery"
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-              elide: Text.ElideRight
-              width: parent.width
-            }
-
-            Text {
-              id: heroStatus
-              text: root.heroStatusText.toUpperCase()
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-              elide: Text.ElideRight
-              width: parent.width
-            }
-          }
-
-          Text {
-            id: heroPercent
-            text: root.batteryInfo.percentage || "—"
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.displayLarge
-            font.bold: true
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-
-            Behavior on color { ColorAnimation { duration: 200 } }
-          }
-        }
-
-        // ---------- Battery progress bar ----------
-        Item {
-          visible: root.batteryPresent
-          width: parent.width
-          implicitHeight: visible ? Style.space(8) : 0
-
-          Rectangle {
-            id: barTrack
-            anchors.fill: parent
-            radius: height / 2
-            color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
-          }
-
-          Rectangle {
-            id: barFill
-            anchors.left: barTrack.left
-            anchors.verticalCenter: barTrack.verticalCenter
-            height: barTrack.height
-            radius: barTrack.radius
-            color: root.batteryFillColor
-            width: Math.max(barTrack.height, barTrack.width * root.batteryFraction)
-
-            Behavior on width { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-            Behavior on color { ColorAnimation { duration: 220 } }
-
-            // Subtle pulse while charging — visible signal that energy is flowing in.
-            SequentialAnimation on opacity {
-              running: root.charging && !root.fullyCharged && root.opened
-              loops: Animation.Infinite
-              alwaysRunToEnd: true
-              NumberAnimation { from: 1.0; to: 0.55; duration: 950; easing.type: Easing.InOutSine }
-              NumberAnimation { from: 0.55; to: 1.0; duration: 950; easing.type: Easing.InOutSine }
-            }
-          }
-        }
-
-        // ---------- Stats ----------
-        // Visibility is intentionally only gated by "we've ever loaded data" so
-        // the section never collapses mid-transition. fullyCharged is *not* part
-        // of the condition: UPower briefly reports FullyCharged on plug-in when
-        // the battery sits above the charge-control start threshold, and we
-        // refuse to flicker the whole panel for that ~1s window.
-        Row {
-          visible: root.batteryPresent && root.batteryInfo.percentage !== undefined
-          width: parent.width
-          spacing: Style.space(20)
-
-          Column {
-            width: (parent.width - parent.spacing) / 2
-            spacing: Style.spacing.labelGap
-            InfoPair { label: "Battery size"; value: root.batteryInfo.size || "" }
-            InfoPair { label: "Charge cycles"; value: root.batteryInfo.cycles || "—" }
-          }
-
-          Column {
-            width: (parent.width - parent.spacing) / 2
-            spacing: Style.spacing.labelGap
-            InfoPair {
-              label: root.chargeThresholdActive ? "Charge limit" : (root.discharging ? "Time left" : "Time to full")
-              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFlowIdle ? "-" : (root.batteryInfo.time || "—"))
-            }
-            InfoPair {
-              label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")
-              value: root.chargeThresholdActive ? "Holding" : (root.batteryFull ? "-" : (root.batteryInfo.rate || ""))
-            }
-          }
-        }
-
-        // ---------- Power profile picker ----------
-        PanelSeparator {
-          visible: root.profiles.length > 0
-          foreground: root.bar.foreground
-        }
+      Flickable {
+        id: scroll
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
 
         Column {
-          visible: root.profiles.length > 0
-          width: parent.width
+          id: column
+          width: scroll.width
           spacing: Style.space(10)
 
-          PanelSectionHeader {
-            text: "POWER PROFILE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          Row {
+            width: parent.width
+            spacing: Style.space(12)
+            PlainText {
+              text: root.glyph
+              color: root.accent
+              font.pixelSize: Style.font.displayLarge
+              anchors.verticalCenter: parent.verticalCenter
+            }
+            Column {
+              width: parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2
+              spacing: Style.space(3)
+              PlainText { text: strings.t("title"); font.pixelSize: Style.font.title; font.bold: true; width: parent.width; elide: Text.ElideRight }
+              PlainText { text: strings.t(root.statusKey); opacity: 0.65; width: parent.width; elide: Text.ElideRight }
+            }
+            PlainText {
+              text: root.batteryPresent ? root.n(Math.round(root.fraction * 100)) + "%" : "AC"
+              font.pixelSize: Style.font.displayLarge
+              font.bold: true
+              anchors.verticalCenter: parent.verticalCenter
+            }
           }
 
+          Rectangle {
+            visible: root.batteryPresent
+            width: parent.width
+            height: Style.space(5)
+            radius: height / 2
+            color: Util.alpha(root.ink, 0.10)
+            Rectangle {
+              height: parent.height
+              radius: parent.radius
+              width: parent.width * root.fraction
+              color: root.accent
+              Behavior on width { NumberAnimation { duration: Style.duration(180); easing.type: Easing.OutCubic } }
+            }
+          }
+
+          Grid {
+            visible: root.batteryPresent
+            width: parent.width
+            columns: 3
+            columnSpacing: Style.space(12)
+            rowSpacing: Style.space(8)
+            readonly property real cell: (width - columnSpacing * 2) / 3
+            Metric {
+              width: parent.cell
+              label: strings.t(root.charging ? "input" : "draw")
+              value: root.metric(root.hardware.watts !== undefined && root.hardware.watts !== null ? root.hardware.watts : (root.device ? root.device.changeRate : null), " W", 1)
+            }
+            Metric { width: parent.cell; label: strings.t(root.charging ? "toFull" : "remaining"); value: root.timeLabel() }
+            Metric { width: parent.cell; label: strings.t("health"); value: root.metric(root.hardware.health, "%") }
+            Metric { width: parent.cell; label: strings.t("capacity"); value: root.metric(root.batteryPresent ? root.device.energyCapacity : null, " Wh", 1) }
+            Metric { width: parent.cell; label: strings.t("cycles"); value: root.metric(root.hardware.cycles, "") }
+            Metric { width: parent.cell; label: strings.t("limit"); value: root.metric(root.hardware.limit, "%") }
+          }
+          PlainText {
+            visible: root.snapshot.batteries.length > 1
+            width: parent.width
+            text: strings.t("multipleBatteries").arg(root.n(root.snapshot.batteries.length))
+            opacity: 0.6
+          }
+
+          PanelSeparator { foreground: root.ink }
+          SectionTitle { text: strings.t("profile") }
           Row {
             id: profileRow
             width: parent.width
             spacing: Style.space(6)
-
-            readonly property real cellWidth: root.profiles.length > 0
-              ? (width - spacing * (root.profiles.length - 1)) / root.profiles.length
-              : 0
-
             Repeater {
+              id: profileRepeater
               model: root.profiles
-              Button {
-                required property var modelData
+              Control {
+                required property string modelData
                 required property int index
-                width: profileRow.cellWidth
-                iconText: root.profileIcon(String(modelData))
-                iconSize: Style.font.title
-                text: String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
-                fontSize: Style.font.bodySmall
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                horizontalPadding: Style.spacing.controlPaddingX
-                verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
-                bordered: true
+                width: (profileRow.width - profileRow.spacing * (root.profiles.length - 1)) / Math.max(1, root.profiles.length)
+                iconText: Model.profileIcon(modelData)
+                text: strings.t(modelData)
                 active: root.activeProfile === modelData
-                hasCursor: root.cursorActive && root.profileIndex === index
+                hasCursor: root.cursor === index
                 onClicked: root.setProfile(modelData)
-                onHovered: function(h) {
-                  if (h) {
-                    root.cursorActive = true
-                    root.profileIndex = index
-                  }
-                }
+                onHovered: function(h) { if (h) root.cursor = index }
               }
             }
           }
-        }
-
-        // ---------- Complete System menu action set ----------
-        PanelSeparator {
-          foreground: root.bar.foreground
-        }
-
-        Column {
-          width: parent.width
-          spacing: Style.space(10)
-
-          PanelSectionHeader {
-            text: "SYSTEM"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          PlainText {
+            width: parent.width
+            text: !root.loaded ? strings.t("loading") : !root.profiles.length ? strings.t("profilesUnavailable") : strings.t("profileHint")
+            wrapMode: Text.WordWrap
+            font.pixelSize: Style.font.caption
+            opacity: 0.6
+          }
+          PlainText {
+            visible: PowerProfiles.degradationReason !== PerformanceDegradationReason.None || PowerProfiles.holds.length > 0
+            width: parent.width
+            text: PowerProfiles.degradationReason !== PerformanceDegradationReason.None ? strings.t("degraded") : strings.t("held")
+            wrapMode: Text.WordWrap
+            color: root.accent
           }
 
+          PanelSeparator { foreground: root.ink }
+          SectionTitle { text: strings.t("idle") }
+          Control {
+            width: parent.width
+            id: idleButton
+            visible: root.snapshot.awake !== null
+            text: strings.t(root.snapshot.awake ? "normalIdle" : "awake")
+            iconText: root.snapshot.awake ? "󰅶" : "󰒲"
+            active: root.snapshot.awake === true
+            hasCursor: root.cursor === root.profiles.length
+            onClicked: root.setIdle()
+            onHovered: function(h) { if (h) root.cursor = root.profiles.length }
+          }
+          PlainText {
+            width: parent.width
+            text: strings.t(root.snapshot.awake === null ? "idleUnavailable" : root.snapshot.awake ? "awakeHint" : "normalHint")
+            wrapMode: Text.WordWrap
+            font.pixelSize: Style.font.caption
+            opacity: 0.6
+          }
+
+          PanelSeparator { foreground: root.ink }
+          SectionTitle { text: strings.t("system") }
           Grid {
             id: actionGrid
             width: parent.width
-            columns: 2
+            columns: 3
             spacing: Style.space(6)
-            readonly property real cellWidth: (width - spacing) / columns
-
             Repeater {
-              model: root.systemActions
-
-              Button {
+              id: actionRepeater
+              model: root.actions
+              Control {
                 required property var modelData
-                width: actionGrid.cellWidth
-                iconText: String(modelData.icon)
-                iconSize: Style.font.title
-                text: String(modelData.label)
-                fontSize: Style.font.bodySmall
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                horizontalPadding: Style.spacing.controlPaddingX
-                verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
-                bordered: true
-                leftAlign: true
-                onClicked: root.requestSystemAction(modelData)
+                required property int index
+                width: (actionGrid.width - actionGrid.spacing * 2) / 3
+                text: strings.t(modelData.id)
+                iconText: modelData.icon
+                hasCursor: root.cursor === root.actionStart + index
+                onClicked: root.requestAction(modelData.id)
+                onHovered: function(h) { if (h) root.cursor = root.actionStart + index }
               }
+            }
+          }
+          PlainText {
+            width: parent.width
+            visible: root.noticeKey !== "" || root.busy
+            text: strings.t(root.busy ? "busy" : root.noticeKey)
+            color: root.failed ? Commons.Color.urgent : root.accent
+            wrapMode: Text.WordWrap
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            PlainText {
+              width: parent.width - refreshButton.width - parent.spacing
+              anchors.verticalCenter: parent.verticalCenter
+              text: strings.t("keyboard")
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              opacity: 0.5
+            }
+            Control {
+              id: refreshButton
+              text: strings.t("refresh")
+              iconText: "󰑐"
+              enabled: !probe.running
+              hasCursor: root.cursor === root.controlCount - 1
+              onClicked: root.refresh()
+              onHovered: function(h) { if (h) root.cursor = root.controlCount - 1 }
             }
           }
         }
       }
-
       ConfirmDialog {
-        id: destructiveConfirm
+        id: confirm
         anchors.fill: parent
-        opened: root.confirmOpen
-        z: 20
-        message: root.pendingSystemAction
-          ? "Are you sure you want to " + String(root.pendingSystemAction.label).toLowerCase() + "?"
-          : ""
-        confirmText: root.pendingSystemAction ? String(root.pendingSystemAction.label) : "Confirm"
-        background: Color.popups.background
-        foreground: root.bar.foreground
-        selectedText: Color.accent
-        fontFamily: root.bar.fontFamily
-        onCanceled: root.cancelSystemAction()
-        onConfirmed: root.confirmSystemAction()
-        Keys.onPressed: function(event) {
-          if (destructiveConfirm.handleKey(event)) event.accepted = true
-        }
+        opened: root.pendingAction !== ""
+        message: root.pendingAction ? strings.t("confirm." + root.pendingAction) : ""
+        confirmText: root.pendingAction ? strings.t(root.pendingAction) : ""
+        cancelText: strings.t("cancel")
+        background: Commons.Color.popups.background
+        foreground: root.ink
+        fontFamily: Style.font.family
+        onCanceled: { root.pendingAction = ""; keys.forceActiveFocus() }
+        onConfirmed: root.executeAction(root.pendingAction)
+        Keys.onPressed: function(event) { if (confirm.handleKey(event)) event.accepted = true }
       }
     }
   }
 
-  component InfoPair: Row {
-    property string label: ""
-    property string value: ""
-
+  component PlainText: Text {
+    textFormat: Text.PlainText
+    color: root.ink
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+  }
+  component SectionTitle: PlainText {
     width: parent.width
-    spacing: Style.space(8)
-
-    InfoLabel { text: label }
-    Item { width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2); height: 1 }
-    InfoValue { text: value }
-  }
-
-  component InfoLabel: Text {
-    color: root.bar.foreground
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    font.letterSpacing: 0.5
     opacity: 0.6
-    font.family: root.bar.fontFamily
-    font.pixelSize: Style.font.bodySmall
   }
-
-  component InfoValue: Text {
-    color: root.bar.foreground
-    font.family: root.bar.fontFamily
-    font.pixelSize: Style.font.bodySmall
+  component Metric: Column {
+    property string label: ""
+    property string value: "—"
+    spacing: Style.space(3)
+    PlainText { text: parent.label; width: parent.width; elide: Text.ElideRight; font.pixelSize: Style.font.caption; opacity: 0.6 }
+    PlainText { text: parent.value; width: parent.width; elide: Text.ElideRight; font.pixelSize: Style.font.title; font.bold: true }
+  }
+  component Control: Button {
+    foreground: root.ink
+    fontFamily: Style.font.family
+    fontSize: Style.font.bodySmall
+    bordered: true
+    verticalPadding: Style.space(6)
+    enabled: !root.busy
+    opacity: enabled ? 1 : 0.45
   }
 }

@@ -6,7 +6,7 @@
 - **The Quickshell contributors** provide the shell toolkit used by Omarchy.
 - **The UPower and power-profiles-daemon contributors** provide the system
   services exposed through the original panel.
-- **thenailedone** added the System action controls, availability checks,
+- **sthuizen** (formerly thenailedone) added the System action controls, availability checks,
   confirmation flow, desktop fallback, tests, and repository documentation.
 
 Names and project references are acknowledgements, not claims of endorsement.
