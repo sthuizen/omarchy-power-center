@@ -59,9 +59,9 @@ function systemActions(suspendAvailable, hibernateAvailable) {
   }
 
   actions.push(
-    { id: "logout", label: "Logout", icon: "󰍃", command: ["omarchy-system-logout"], destructive: true },
-    { id: "reboot", label: "Reboot", icon: "󰜉", command: ["omarchy-system-reboot"], destructive: true },
-    { id: "shutdown", label: "Shutdown", icon: "󰐥", command: ["omarchy-system-shutdown"], destructive: true }
+    { id: "logout", label: "Logout", icon: "󰍃", command: ["omarchy", "system", "logout"], destructive: true },
+    { id: "reboot", label: "Reboot", icon: "󰜉", command: ["omarchy", "system", "reboot"], destructive: true },
+    { id: "shutdown", label: "Shutdown", icon: "󰐥", command: ["omarchy", "system", "shutdown"], destructive: true }
   )
   return actions
 }

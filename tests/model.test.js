@@ -27,9 +27,9 @@ test("requires confirmation only for session-ending and power-ending actions", (
 test("routes actions through canonical Omarchy commands", () => {
   const byId = Object.fromEntries(Model.systemActions(true, true).map(action => [action.id, action]))
   assert.deepEqual(byId.lock.command, ["omarchy-system-lock"])
-  assert.deepEqual(byId.logout.command, ["omarchy-system-logout"])
-  assert.deepEqual(byId.reboot.command, ["omarchy-system-reboot"])
-  assert.deepEqual(byId.shutdown.command, ["omarchy-system-shutdown"])
+  assert.deepEqual(byId.logout.command, ["omarchy", "system", "logout"])
+  assert.deepEqual(byId.reboot.command, ["omarchy", "system", "reboot"])
+  assert.deepEqual(byId.shutdown.command, ["omarchy", "system", "shutdown"])
   assert.deepEqual(byId.suspend.command, ["systemctl", "suspend"])
   assert.deepEqual(byId.hibernate.command, ["systemctl", "hibernate"])
 })

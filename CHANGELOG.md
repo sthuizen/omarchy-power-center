@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Restart, shutdown, and logout now use the current `omarchy system` commands;
+  the removed standalone commands silently failed to launch.
+
 ## [2.0.0] - 2026-11-07
 
 ### Changed
